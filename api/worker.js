@@ -4,8 +4,8 @@
 //   GET  /vapid                                             알림용 공개키
 //   POST /sub   {sub, list, names, th, welcome}             알림 켜기·종목 갱신
 //   POST /unsub {endpoint}                                  알림 끄기
-//   (1분마다) 장중에 알림 켠 종목이 전일 종가 대비 th%(기본 1%)씩 움직일 때마다 푸시
-//            예) +1% → +2% → +3%, 다시 +1%대로 내려오면 그것도 알림 (경계에서 잦은 알림 방지 여유 0.25칸)
+//   (1분마다) 장중에 알림 켠 종목이 전일 종가 대비 th%(기본 5%) 배수를 넘나들 때마다 푸시
+//            예) +5% → +10% → +15%, 다시 +10% 아래로 내려오면 그것도 알림 (경계 여유 최대 0.5%p)
 
 import { genVapid, sendPush } from "./push.js";
 
@@ -103,7 +103,7 @@ function fmtLine(name, q, up) {
 
 // 몇 번째 칸(1%씩)에 있는지 — 이전 칸에서 아래위로 벗어날 때만 바뀜
 export function nextLevel(L, r, th) {
-  const raw = Math.trunc(r / th), hy = th * 0.25;
+  const raw = Math.trunc(r / th), hy = Math.min(th * 0.25, 0.5);
   if (raw > L && (L >= 0 || r > L * th + hy)) return raw;
   if (raw < L && (L <= 0 || r < L * th - hy)) return raw;
   return L;
@@ -131,12 +131,12 @@ export class Store {
       const codes = (Array.isArray(b.list) ? b.list : []).filter((c) => KR_RE.test(c) || US_RE.test(c)).slice(0, 40);
       const names = {};
       for (const c of codes) if (b.names && typeof b.names[c] === "string") names[c] = b.names[c].slice(0, 30);
-      const th = Math.min(30, Math.max(0.5, num(b.th) || 1));
+      const th = Math.min(30, Math.max(0.5, num(b.th) || 5));
       const old = await this.s.get("sub:" + id);
-      await this.s.put("sub:" + id, { sub: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, list: codes, names, th, lvl: (old && old.lvl) || {} });
+      await this.s.put("sub:" + id, { sub: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, list: codes, names, th, lvl: (old && old.th === th && old.lvl) || {} });
       let welcome = null;
       if (b.welcome) {
-        welcome = await sendPush(sub, { title: "🔔 주식 알림이 켜졌어요", body: `알림 켠 종목이 전일 종가 대비 ${th}%씩 움직일 때마다 알려드릴게요`, tag: "welcome" }, await this.vapid(), SUBJECT).catch((e) => String(e));
+        welcome = await sendPush(sub, { title: "🔔 주식 알림이 켜졌어요", body: `알림 켠 종목이 전일 종가 대비 ±${th}%, ±${th * 2}%, ±${th * 3}%… 를 넘나들 때마다 알려드릴게요`, tag: "welcome" }, await this.vapid(), SUBJECT).catch((e) => String(e));
       }
       return json({ ok: true, count: codes.length, welcome });
     }
