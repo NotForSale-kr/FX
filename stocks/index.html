@@ -55,15 +55,15 @@ dialog input{width:100%;border:0;border-radius:12px;padding:12px;font-size:16px;
   <p class="note" id="note"></p>
 </div>
 <dialog id="dlg">
-  <input id="q" placeholder="종목명, 코드(005930) 또는 미국 티커(AAPL)" autocomplete="off">
+  <input id="q" placeholder="종목명, 코드(005930), 미국 티커(AAPL)" autocomplete="off">
   <div id="res"></div>
   <div class="lbl">내 관심종목</div>
   <div id="mine"></div>
   <button id="done">완료</button>
 </dialog>
 <script>
-// 시세를 직접 못 받는 환경이면, 여기에 중계 주소(예: https://xxx.workers.dev/?u=)를 넣으면 그쪽으로 받음
-var PROXY = "";
+// 시세 중계 서버 주소 (Cloudflare Worker). 비어 있으면 연결 전 상태.
+var API = "";
 var KR = [["삼성전자","005930"],["SK하이닉스","000660"],["LG에너지솔루션","373220"],["삼성바이오로직스","207940"],["현대차","005380"],
   ["삼성전자우","005935"],["기아","000270"],["셀트리온","068270"],["KB금융","105560"],["NAVER","035420"],["신한지주","055550"],
   ["한화에어로스페이스","012450"],["현대모비스","012330"],["POSCO홀딩스","005490"],["삼성물산","028260"],["카카오","035720"],
@@ -77,118 +77,112 @@ var KR = [["삼성전자","005930"],["SK하이닉스","000660"],["LG에너지솔
 var US = [["애플","AAPL"],["마이크로소프트","MSFT"],["엔비디아","NVDA"],["테슬라","TSLA"],["아마존","AMZN"],["알파벳","GOOGL"],
   ["메타","META"],["브로드컴","AVGO"],["넷플릭스","NFLX"],["팔란티어","PLTR"],["AMD","AMD"],["TSMC","TSM"],
   ["나스닥100 ETF","QQQ"],["S&P500 ETF","SPY"]];
-var IDX = [["코스피","KOSPI","kr"],["코스닥","KOSDAQ","kr"],["나스닥","^IXIC","us"],["S&P 500","^GSPC","us"]];
+var IDX = [["코스피","KOSPI"],["코스닥","KOSDAQ"],["나스닥","^IXIC"],["S&P 500","^GSPC"]];
 
 var $ = function(id){ return document.getElementById(id); };
 function get(k, d){ try { var v = localStorage.getItem("st." + k); return v ? JSON.parse(v) : d; } catch(e){ return d; } }
 function put(k, v){ try { localStorage.setItem("st." + k, JSON.stringify(v)); } catch(e){} }
 var list = get("list", ["005930","000660","005380","035420","AAPL","NVDA","TSLA"]);
-var Q = get("q", {});          // 마지막 시세 {코드:{n,p,c,r,t}}
+var NM = get("nm", {});        // 검색으로 추가한 종목 이름
+var Q = get("q", {});          // 마지막 시세 {코드:{n,p,c,r,usd}}
 var ok = {kr:null, us:null}, at = get("at", 0);
-function isKR(c){ return /^\d{6}$/.test(c) || c === "KOSPI" || c === "KOSDAQ"; }
-function nameOf(c){ var a = KR.concat(US).filter(function(x){ return x[1] === c; })[0]; return a ? a[0] : (Q[c] && Q[c].n) || c; }
-function num(s){ return typeof s === "number" ? s : parseFloat(String(s || "").replace(/,/g, "")); }
+function isKRS(c){ return /^\d[0-9A-Z]{5}$/.test(c); }
+function isKR(c){ return isKRS(c) || c === "KOSPI" || c === "KOSDAQ"; }
+function nameOf(c){ var a = KR.concat(US).filter(function(x){ return x[1] === c; })[0]; return a ? a[0] : NM[c] || (Q[c] && Q[c].n) || c; }
 
-// ----- 시세 받기 -----
+// ----- 시세 받기 (중계 서버에 한 번에 요청) -----
 function load(url){
-  function go(u){ return Promise.race([
-    fetch(u, {cache:"no-store"}).then(function(r){ if (!r.ok) throw 0; return r.json(); }),
-    new Promise(function(_, no){ setTimeout(no, 8000); })]); }
-  return go(url)["catch"](function(e){ if (PROXY) return go(PROXY + encodeURIComponent(url)); throw e; });
-}
-function loadKR(codes, kind){
-  if (!codes.length) return Promise.resolve();
-  return load("https://polling.finance.naver.com/api/realtime/domestic/" + kind + "/" + codes.join(",")).then(function(j){
-    (j.datas || []).forEach(function(d){
-      var p = num(d.closePrice), c = num(d.compareToPreviousClosePrice), r = num(d.fluctuationsRatio);
-      var code = (d.compareToPreviousPrice && d.compareToPreviousPrice.code) || "";
-      if ((code === "5" || code === "4") && c > 0) c = -c;          // 하락·하한
-      if ((code === "5" || code === "4") && r > 0) r = -r;
-      Q[d.itemCode || d.symbolCode] = {n:d.stockName || d.indexName || "", p:p, c:c, r:r, open:d.marketStatus === "OPEN"};
-    });
-    ok.kr = true;
-  });
-}
-function loadUS(sym){
-  return load("https://query1.finance.yahoo.com/v8/finance/chart/" + encodeURIComponent(sym) + "?range=1d&interval=1d").then(function(j){
-    var m = j.chart.result[0].meta, p = m.regularMarketPrice, pc = m.chartPreviousClose || m.previousClose;
-    Q[sym] = {n:"", p:p, c:p - pc, r:(p / pc - 1) * 100, usd:true};
-    ok.us = true;
-  });
+  return Promise.race([
+    fetch(url, {cache:"no-store"}).then(function(r){ if (!r.ok) throw 0; return r.json(); }),
+    new Promise(function(_, no){ setTimeout(no, 9000); })]);
 }
 var busy = false;
 function refresh(){
-  if (busy) return; busy = true;
-  var krS = list.filter(function(c){ return /^\d{6}$/.test(c); });
-  var usS = list.filter(function(c){ return !isKR(c); }).concat(["^IXIC","^GSPC"]);
-  var jobs = [
-    loadKR(krS, "stock")["catch"](function(){ ok.kr = false; }),
-    loadKR(["KOSPI","KOSDAQ"], "index")["catch"](function(){ ok.kr = ok.kr || false; })
-  ].concat(usS.map(function(s){ return loadUS(s)["catch"](function(){ if (ok.us !== true) ok.us = false; }); }));
-  Promise.all(jobs).then(function(){
-    busy = false;
-    if (ok.kr || ok.us) { at = Date.now(); put("q", Q); put("at", at); }
-    render();
-  });
+  if (!API || busy) { status(); return; }
+  busy = true;
+  var kr = list.filter(isKRS), us = list.filter(function(c){ return !isKR(c); }).concat(["^IXIC","^GSPC"]);
+  load(API + "/?kr=" + kr.join(",") + "&idx=KOSPI,KOSDAQ&us=" + us.map(encodeURIComponent).join(",")).then(function(j){
+    Object.keys(j.q || {}).forEach(function(k){ Q[k] = j.q[k]; });
+    ok.kr = Object.keys(j.q || {}).some(isKR);
+    ok.us = us.some(function(s){ return j.q && j.q[s]; });
+    at = j.t || Date.now(); put("q", Q); put("at", at);
+  })["catch"](function(){ ok.kr = ok.us = false; }).then(function(){ busy = false; render(); });
 }
 
 // ----- 화면 -----
+function sign(v){ return v > 0 ? "up" : v < 0 ? "dn" : "fl"; }
 function fmtP(c, v){
   if (!isFinite(v)) return "—";
   return Q[c] && Q[c].usd ? "$" + v.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2})
-    : v.toLocaleString("en-US", {maximumFractionDigits: v < 1000 && !/^\d{6}$/.test(c) ? 2 : 0});
+    : v.toLocaleString("en-US", {maximumFractionDigits:0});
 }
 function chg(c){
   var q = Q[c]; if (!q || !isFinite(q.c)) return '<small class="fl">—</small>';
-  var cls = q.c > 0 ? "up" : q.c < 0 ? "dn" : "fl", arrow = q.c > 0 ? "▲" : q.c < 0 ? "▼" : "";
-  var cv = Math.abs(q.c).toLocaleString("en-US", {maximumFractionDigits: q.usd || !/^\d{6}$/.test(c) ? 2 : 0});
-  return '<small class="' + cls + '">' + arrow + cv + " (" + (q.r > 0 ? "+" : "") + q.r.toFixed(2) + "%)</small>";
+  var arrow = q.c > 0 ? "▲" : q.c < 0 ? "▼" : "";
+  var cv = Math.abs(q.c).toLocaleString("en-US", q.usd ? {minimumFractionDigits:2, maximumFractionDigits:2} : {maximumFractionDigits:0});
+  return '<small class="' + sign(q.c) + '">' + arrow + cv + " (" + (q.r > 0 ? "+" : "") + q.r.toFixed(2) + "%)</small>";
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, function(x){ return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[x]; }); }
 function render(){
   $("idx").innerHTML = IDX.map(function(x){
     var q = Q[x[1]];
     return '<div class="ix"><small>' + x[0] + '</small><b>' + (q ? q.p.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}) : "—") + '</b>'
-      + (q ? '<span class="' + (q.c > 0 ? "up" : q.c < 0 ? "dn" : "fl") + '">' + (q.r > 0 ? "+" : "") + q.r.toFixed(2) + '%</span>' : "") + '</div>';
+      + (q ? '<span class="' + sign(q.c) + '">' + (q.r > 0 ? "+" : "") + q.r.toFixed(2) + '%</span>' : "") + '</div>';
   }).join("");
   $("list").innerHTML = list.map(function(c){
     var q = Q[c];
-    return '<div class="row"><div class="n"><b>' + esc(nameOf(c)) + '</b><small>' + (isKR(c) ? c : c + " · 미국") + '</small></div>'
+    return '<div class="row"><div class="n"><b>' + esc(nameOf(c)) + '</b><small>' + (isKR(c) ? c : esc(c) + " · 미국") + '</small></div>'
       + '<div class="p"><b>' + (q ? fmtP(c, q.p) : "—") + '</b>' + chg(c) + '</div></div>';
   }).join("") || '<p class="note">[종목]을 눌러 관심종목을 추가하세요</p>';
   status();
 }
 function hms(t){ var d = new Date(t); return d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0"); }
 function status(){
-  var fresh = Date.now() - at < 60000;
-  $("st").innerHTML = '<i class="dot' + (fresh ? " on" : "") + '"></i>' + (at ? (fresh ? "실시간 " : "") + hms(at) : "연결 안 됨");
+  var fresh = API && Date.now() - at < 60000;
+  $("st").innerHTML = '<i class="dot' + (fresh ? " on" : "") + '"></i>' + (fresh ? "실시간 " + hms(at) : at ? hms(at) + " 기준" : "연결 전");
   function s(v){ return v === true ? "✅" : v === false ? "❌" : "…"; }
-  $("note").innerHTML = "국내 시세 " + s(ok.kr) + " · 미국 시세 " + s(ok.us) + " · 15초마다 갱신<br>"
+  $("note").innerHTML = (API ? "국내 시세 " + s(ok.kr) + " · 미국 시세 " + s(ok.us) + " · 15초마다 갱신<br>" : "시세 서버 연결 전이에요<br>")
     + "상승 빨강 · 하락 파랑 · 미국 주식은 지연 시세일 수 있어요";
 }
 
-// ----- 종목 추가·삭제 -----
+// ----- 종목 추가·삭제 (서버 연결 시 전체 종목 검색) -----
+var found = [], timer = null;
 function renderDlg(){
-  var q = $("q").value.trim(), Q2 = q.toUpperCase(), out = [];
+  var q = $("q").value.trim(), Q2 = q.toUpperCase(), out = [], seen = {};
+  function add(n, c, m){ if (!seen[c] && list.indexOf(c) < 0 && out.length < 12) { seen[c] = 1; out.push([n, c, m || ""]); } }
   if (q) {
-    KR.concat(US).forEach(function(x){ if (out.length < 8 && list.indexOf(x[1]) < 0 && (x[0].toUpperCase().indexOf(Q2) >= 0 || x[1].indexOf(Q2) === 0)) out.push(x); });
-    if (/^\d{6}$/.test(q) && list.indexOf(q) < 0 && !out.some(function(x){ return x[1] === q; })) out.unshift(["코드로 추가", q]);
-    if (/^[A-Z.\-^]{1,10}$/.test(Q2) && !/^\d/.test(Q2) && list.indexOf(Q2) < 0 && !out.some(function(x){ return x[1] === Q2; })) out.push(["미국 티커로 추가", Q2]);
+    found.forEach(function(x){ add(x.n, x.c, x.m); });
+    KR.concat(US).forEach(function(x){ if (x[0].toUpperCase().indexOf(Q2) >= 0 || x[1].indexOf(Q2) === 0) add(x[0], x[1]); });
+    if (isKRS(Q2)) add("코드로 추가", Q2);
+    else if (/^[A-Z][A-Z.\-]{0,9}$/.test(Q2)) add("미국 티커로 추가", Q2);
   }
   $("res").innerHTML = out.map(function(x){
-    return '<div class="it"><span>' + esc(x[0]) + '<small>' + x[1] + '</small></span><button data-add="' + x[1] + '">추가</button></div>';
+    return '<div class="it"><span>' + esc(x[0]) + '<small>' + esc(x[1]) + (x[2] ? " · " + esc(x[2]) : "") + '</small></span><button data-add="' + esc(x[1]) + '" data-n="' + esc(x[0]) + '">추가</button></div>';
   }).join("");
   $("mine").innerHTML = list.map(function(c){
-    return '<div class="it"><span>' + esc(nameOf(c)) + '<small>' + c + '</small></span><button data-del="' + c + '">삭제</button></div>';
+    return '<div class="it"><span>' + esc(nameOf(c)) + '<small>' + esc(c) + '</small></span><button data-del="' + esc(c) + '">삭제</button></div>';
   }).join("");
 }
-$("edit").onclick = function(){ $("q").value = ""; renderDlg(); $("dlg").showModal(); };
-$("q").oninput = renderDlg;
+$("q").oninput = function(){
+  found = []; renderDlg();
+  clearTimeout(timer);
+  var q = $("q").value.trim();
+  if (API && q) timer = setTimeout(function(){
+    load(API + "/search?q=" + encodeURIComponent(q)).then(function(j){
+      if ($("q").value.trim() === q) { found = j.items || []; renderDlg(); }
+    })["catch"](function(){});
+  }, 300);
+};
+$("edit").onclick = function(){ $("q").value = ""; found = []; renderDlg(); $("dlg").showModal(); };
 $("dlg").onclick = function(e){
-  var a = e.target.dataset && e.target.dataset.add, d = e.target.dataset && e.target.dataset.del;
-  if (a) { list.push(a); $("q").value = ""; }
-  if (d) list = list.filter(function(c){ return c !== d; });
-  if (a || d) { put("list", list); renderDlg(); }
+  var d = e.target.dataset || {};
+  if (d.add) {
+    list.push(d.add);
+    if (d.n && !/추가$/.test(d.n)) { NM[d.add] = d.n; put("nm", NM); }
+    $("q").value = ""; found = [];
+  }
+  if (d.del) list = list.filter(function(c){ return c !== d.del; });
+  if (d.add || d.del) { put("list", list); renderDlg(); }
 };
 $("done").onclick = function(){ $("dlg").close(); render(); refresh(); };
 $("st").onclick = function(){ $("st").textContent = "…"; refresh(); };

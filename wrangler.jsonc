@@ -1,0 +1,7 @@
+// Cloudflare Worker 설정 — 주식 시세 중계 서버 (api/worker.js)
+{
+  "name": "fx",
+  "main": "api/worker.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true
+}
