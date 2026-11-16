@@ -32,6 +32,12 @@ button{font:inherit;font-size:13px;color:inherit;border:0;background:var(--card)
 .p b{display:block;font-size:19px}
 .p small{font-size:13px}
 .up{color:var(--up)}.dn{color:var(--dn)}.fl{color:var(--sub)}
+.inst{display:flex;align-items:center;gap:8px;background:var(--ac);color:#fff;border-radius:16px;padding:12px 12px 12px 14px;margin-bottom:10px;font-size:14px;line-height:1.4}
+.inst b{flex:1;font-weight:600}
+.inst button{background:#fff;color:var(--ac);font-weight:700;font-size:14px}
+.inst .x{background:none;color:#fff;padding:4px 6px}
+.share{display:flex;gap:8px;margin:4px 0 12px}
+.share button{flex:1;padding:12px;font-size:14px;border-radius:14px}
 .note{font-size:11px;color:var(--sub);text-align:center;line-height:1.6}
 dialog{border:0;border-radius:18px;padding:12px;width:min(92vw,420px);max-height:82vh;background:var(--bg);color:var(--tx)}
 dialog input{width:100%;border:0;border-radius:12px;padding:12px;font-size:16px;background:var(--card);color:var(--tx);outline:none;margin-bottom:8px}
@@ -50,8 +56,13 @@ dialog input{width:100%;border:0;border-radius:12px;padding:12px;font-size:16px;
     <button id="st">불러오는 중</button>
     <button id="edit">종목</button>
   </header>
+  <div class="inst" id="inst" hidden><b id="instTxt"></b><button id="instBtn" hidden>설치</button><button class="x" id="instX" aria-label="닫기">✕</button></div>
   <div class="idx" id="idx"></div>
   <div id="list"></div>
+  <div class="share">
+    <button id="shareNow">📤 지금 화면 공유</button>
+    <button id="shareApp">🔗 앱 공유</button>
+  </div>
   <p class="note" id="note"></p>
 </div>
 <dialog id="dlg">
@@ -186,6 +197,55 @@ $("dlg").onclick = function(e){
 };
 $("done").onclick = function(){ $("dlg").close(); render(); refresh(); };
 $("st").onclick = function(){ $("st").textContent = "…"; refresh(); };
+
+// ----- 공유 -----
+var APP_URL = /github\.io$/.test(location.host) ? location.origin + location.pathname.replace(/index\.html$/, "") : "https://notforsale-kr.github.io/FX/stocks/";
+function share(data, btn){
+  var label = btn.textContent;
+  function flash(msg){ btn.textContent = msg; setTimeout(function(){ btn.textContent = label; }, 1800); }
+  if (navigator.share) { navigator.share(data)["catch"](function(){}); return; }
+  var txt = data.text + "\n" + data.url;
+  if (navigator.clipboard) navigator.clipboard.writeText(txt).then(function(){ flash("복사됐어요"); }, function(){ flash("공유가 안 되는 환경이에요"); });
+  else flash("공유가 안 되는 환경이에요");
+}
+function pct(q){ return (q.r > 0 ? "+" : "") + q.r.toFixed(2) + "%"; }
+$("shareNow").onclick = function(){
+  var d = new Date(at || Date.now());
+  var lines = ["[주식] " + (d.getMonth() + 1) + "." + d.getDate() + " " + d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0") + " 기준"];
+  var ix = IDX.filter(function(x){ return Q[x[1]]; }).map(function(x){
+    var q = Q[x[1]]; return x[0] + " " + q.p.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}) + " (" + pct(q) + ")";
+  });
+  for (var i = 0; i < ix.length; i += 2) lines.push(ix.slice(i, i + 2).join(" · "));
+  list.forEach(function(c){
+    var q = Q[c]; if (!q) return;
+    var arrow = q.c > 0 ? "▲" : q.c < 0 ? "▼" : "";
+    var cv = Math.abs(q.c).toLocaleString("en-US", q.usd ? {minimumFractionDigits:2, maximumFractionDigits:2} : {maximumFractionDigits:0});
+    lines.push(nameOf(c) + " " + fmtP(c, q.p) + " " + arrow + cv + " (" + pct(q) + ")");
+  });
+  share({title:"주식", text:lines.join("\n"), url:APP_URL}, this);
+};
+$("shareApp").onclick = function(){
+  share({title:"주식 시세", text:"관심종목을 한눈에 보는 주식 시세 앱이에요. 링크를 열고 '설치'를 누르면 바로 깔려요.", url:APP_URL}, this);
+};
+
+// ----- 설치 안내 (공유받은 링크로 처음 열었을 때) -----
+var IN_FRAME = window.self !== window.top;
+function inApp(ua){ return /KAKAOTALK/i.test(ua) ? "kakao" : /NAVER\(inapp|Instagram|FBAN|FBAV|Line\/|DaumApps|everytimeApp/i.test(ua) ? "other" : ""; }
+var UA = navigator.userAgent, IA = inApp(UA), deferred = null;
+var INSTALLED = (window.matchMedia && matchMedia("(display-mode: standalone)").matches) || navigator.standalone === true;
+if (!INSTALLED && !IN_FRAME && IA === "kakao") location.href = "kakaotalk://web/openExternal?url=" + encodeURIComponent(location.href);
+function showInst(txt, btn){
+  if (INSTALLED || IN_FRAME || get("instX", 0)) return;
+  $("instTxt").textContent = txt; $("instBtn").hidden = !btn; $("inst").hidden = false;
+}
+if (IA) showInst("오른쪽 위 메뉴에서 '다른 브라우저로 열기'를 누르면 앱으로 설치할 수 있어요");
+else if (/iPhone|iPad/.test(UA)) showInst("아래 공유 버튼(□↑) → '홈 화면에 추가'를 누르면 앱으로 설치돼요");
+else if (/SamsungBrowser/.test(UA)) showInst("메뉴(≡) → '페이지 추가' → '홈 화면'을 누르면 앱으로 설치돼요");
+else if (/Android/.test(UA)) setTimeout(function(){ if (!deferred) showInst("메뉴(⋮) → '앱 설치'를 누르면 앱으로 설치돼요"); }, 3000);
+window.addEventListener("beforeinstallprompt", function(e){ e.preventDefault(); deferred = e; showInst("홈 화면에 앱으로 설치할 수 있어요", true); });
+$("instBtn").onclick = function(){ if (deferred) { deferred.prompt(); deferred = null; } $("inst").hidden = true; };
+$("instX").onclick = function(){ $("inst").hidden = true; put("instX", 1); };
+window.addEventListener("appinstalled", function(){ $("inst").hidden = true; });
 
 setInterval(function(){ if (!document.hidden) refresh(); }, 15000);
 setInterval(status, 5000);
