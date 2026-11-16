@@ -30,6 +30,8 @@ button{font:inherit;font-size:13px;color:inherit;border:0;background:var(--card)
 .seg{display:flex;gap:4px;background:var(--card);border-radius:99px;padding:4px;margin:0 0 10px}
 .seg button{flex:1;background:none;padding:8px 4px}
 .seg .sel{background:var(--ac);color:#fff;font-weight:700}
+.share{display:flex;gap:8px;margin:4px 0 12px}
+.share button{flex:1;padding:12px;font-size:14px;border-radius:14px}
 .note{font-size:11px;color:var(--sub);text-align:center;line-height:1.5}
 dialog{border:0;border-radius:18px;padding:10px;width:min(92vw,420px);max-height:80vh;background:var(--bg);color:var(--tx)}
 dialog label{display:flex;gap:10px;align-items:center;padding:10px 12px;background:var(--card);border-radius:12px;margin-bottom:6px}
@@ -50,6 +52,10 @@ dialog button{width:100%;background:var(--ac);color:#fff;font-size:15px;padding:
     <button data-m="-1">송금 받을 때</button>
   </div>
   <div id="list"></div>
+  <div class="share">
+    <button id="shareNow">📤 지금 화면 공유</button>
+    <button id="shareApp">🔗 앱 공유</button>
+  </div>
   <p class="note" id="note"></p>
 </div>
 <dialog id="dlg"><div id="opts"></div><button id="done">완료</button></dialog>
@@ -233,6 +239,32 @@ function upbit(){
     } catch(e){}
   });
 }
+
+// ----- 공유 -----
+var APP_URL = /github\.io$/.test(location.host) ? location.origin + location.pathname.replace(/index\.html$/, "") : "https://notforsale-kr.github.io/FX/";
+function share(data, btn){
+  var label = btn.textContent;
+  function flash(msg){ btn.textContent = msg; setTimeout(function(){ btn.textContent = label; }, 1800); }
+  if (navigator.share) { navigator.share(data)["catch"](function(){}); return; }
+  var txt = data.text + (data.url ? "\n" + data.url : "");
+  if (navigator.clipboard) navigator.clipboard.writeText(txt).then(function(){ flash("복사됐어요"); }, function(){ flash("공유가 안 되는 환경이에요"); });
+  else flash("공유가 안 되는 환경이에요");
+}
+$("shareNow").onclick = function(){
+  var d = new Date(R.t || Date.now()), p = R.d.split("-");
+  var when = R.t ? (d.getMonth() + 1) + "." + d.getDate() + " " + hm(R.t) + " 실시간" : (+p[1]) + "." + (+p[2]) + " 기준";
+  var lines = ["[환율계산기] " + when + (M === 1 ? " · 송금 보낼 때" : M === -1 ? " · 송금 받을 때" : "")];
+  list.forEach(function(c){
+    var v = val(c), line = CUR[c][0] + " " + c + " " + fmt(c, v);
+    if (c === "KRW" && Math.abs(v) >= 10000) line += " (" + won(v) + ")";
+    if (COIN[c] && UP[c]) line += " · 업비트 " + Math.round(UP[c]).toLocaleString() + "원";
+    lines.push(line);
+  });
+  share({title:"환율계산기", text:lines.join("\n"), url:APP_URL}, this);
+};
+$("shareApp").onclick = function(){
+  share({title:"환율계산기", text:"실시간 환율계산기예요. 링크를 열고 '홈 화면에 추가'하면 앱처럼 쓸 수 있어요.", url:APP_URL}, this);
+};
 
 $("st").onclick = function(){ $("st").textContent = "…"; refresh(); };
 setInterval(function(){ if (!document.hidden) refresh(); }, 60000);
