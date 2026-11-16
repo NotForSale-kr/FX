@@ -4,7 +4,8 @@
 //   GET  /vapid                                             알림용 공개키
 //   POST /sub   {sub, list, names, th, welcome}             알림 켜기·종목 갱신
 //   POST /unsub {endpoint}                                  알림 끄기
-//   (1분마다) 장중에 관심종목이 전일 종가 대비 ±th% 넘으면 푸시 — 종목·방향별 하루 한 번
+//   (1분마다) 장중에 알림 켠 종목이 전일 종가 대비 th%(기본 1%)씩 움직일 때마다 푸시
+//            예) +1% → +2% → +3%, 다시 +1%대로 내려오면 그것도 알림 (경계에서 잦은 알림 방지 여유 0.25칸)
 
 import { genVapid, sendPush } from "./push.js";
 
@@ -94,10 +95,18 @@ export function windows(now = new Date()) {
 const sha = async (s) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)))]
   .slice(0, 16).map((b) => b.toString(16).padStart(2, "0")).join("");
 
-function fmtLine(name, q) {
+function fmtLine(name, q, up) {
   const pct = (q.r > 0 ? "+" : "") + q.r.toFixed(2) + "%";
   const price = q.usd ? "$" + q.p.toFixed(2) : Math.round(q.p).toLocaleString("en-US") + "원";
-  return `${q.r > 0 ? "▲" : "▼"} ${name} ${pct} · ${price}`;
+  return `${up ? "▲" : "▼"} ${name} ${pct} · ${price}`;
+}
+
+// 몇 번째 칸(1%씩)에 있는지 — 이전 칸에서 아래위로 벗어날 때만 바뀜
+export function nextLevel(L, r, th) {
+  const raw = Math.trunc(r / th), hy = th * 0.25;
+  if (raw > L && (L >= 0 || r > L * th + hy)) return raw;
+  if (raw < L && (L <= 0 || r < L * th - hy)) return raw;
+  return L;
 }
 
 // 구독 정보와 알림 기록을 저장하는 곳
@@ -124,10 +133,10 @@ export class Store {
       for (const c of codes) if (b.names && typeof b.names[c] === "string") names[c] = b.names[c].slice(0, 30);
       const th = Math.min(30, Math.max(0.5, num(b.th) || 1));
       const old = await this.s.get("sub:" + id);
-      await this.s.put("sub:" + id, { sub: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, list: codes, names, th, sent: (old && old.sent) || {} });
+      await this.s.put("sub:" + id, { sub: { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } }, list: codes, names, th, lvl: (old && old.lvl) || {} });
       let welcome = null;
       if (b.welcome) {
-        welcome = await sendPush(sub, { title: "🔔 주식 알림이 켜졌어요", body: `관심종목이 전일 종가 대비 ±${th}% 움직이면 알려드릴게요`, tag: "welcome" }, await this.vapid(), SUBJECT).catch((e) => String(e));
+        welcome = await sendPush(sub, { title: "🔔 주식 알림이 켜졌어요", body: `알림 켠 종목이 전일 종가 대비 ${th}%씩 움직일 때마다 알려드릴게요`, tag: "welcome" }, await this.vapid(), SUBJECT).catch((e) => String(e));
       }
       return json({ ok: true, count: codes.length, welcome });
     }
@@ -156,21 +165,21 @@ export class Store {
       if (sent >= 15) break;
       const lines = [];
       let changed = false;
-      for (const k of Object.keys(v.sent)) if (!k.endsWith(today)) { delete v.sent[k]; changed = true; }   // 지난날 기록 정리
+      v.lvl = v.lvl || {};
+      for (const c of Object.keys(v.lvl)) if (v.lvl[c].d !== today || !v.list.includes(c)) { delete v.lvl[c]; changed = true; }   // 지난날·뺀 종목 정리
       for (const c of v.list) {
         const x = q[c];
         if (!x || !isFinite(x.r) || (!x.open && !force)) continue;
-        const dir = x.r >= v.th ? "up" : x.r <= -v.th ? "down" : null;
-        if (!dir) continue;
-        const mark = `${c}:${dir}:${today}`;
-        if (v.sent[mark]) continue;
-        v.sent[mark] = 1;
-        lines.push(fmtLine(v.names[c] || x.n || c, x));
+        const L = v.lvl[c] ? v.lvl[c].L : 0, nl = nextLevel(L, x.r, v.th);
+        if (nl === L) continue;
+        v.lvl[c] = { d: today, L: nl };
+        changed = true;
+        lines.push(fmtLine(v.names[c] || x.n || c, x, nl > L));
       }
       if (!lines.length) { if (changed) await this.s.put(key, v); continue; }
       const data = lines.length === 1
         ? { title: lines[0].split(" · ")[0], body: "전일 종가 대비 · 현재 " + lines[0].split(" · ")[1], tag: "move" }
-        : { title: `관심종목 ${lines.length}개가 ±${v.th}% 넘게 움직였어요`, body: lines.join("\n"), tag: "move" };
+        : { title: `관심종목 ${lines.length}개 변동`, body: lines.join("\n"), tag: "move" };
       const status = await sendPush(v.sub, data, vapid, SUBJECT).catch(() => 0);
       sent++;
       if (status === 404 || status === 410) await this.s.delete(key);
