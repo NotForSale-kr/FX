@@ -1,7 +1,14 @@
-// Cloudflare Worker 설정 — 주식 시세 중계 서버 (api/worker.js)
+// Cloudflare Worker 설정 — 주식 시세 중계 서버 + 등락 알림 (api/worker.js)
 {
   "name": "fx",
   "main": "api/worker.js",
   "compatibility_date": "2026-11-01",
-  "workers_dev": true
+  "workers_dev": true,
+  // 알림 구독 저장소 (무료 플랜은 SQLite 방식만 가능)
+  "durable_objects": {
+    "bindings": [{ "name": "STORE", "class_name": "Store" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Store"] }],
+  // 1분마다 등락 확인 (장 시간에만 실제 작업)
+  "triggers": { "crons": ["* * * * *"] }
 }
