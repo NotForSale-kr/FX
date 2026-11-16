@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>환율계산기</title>
+<meta name="theme-color" content="#f4f5f7">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#111;--sub:#777;--ac:#3d5afe;--ok:#16a34a}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#1b1e24;--tx:#f2f2f2;--sub:#999;--ac:#8796ff;--ok:#4ade80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,sans-serif;-webkit-tap-highlight-color:transparent}
+.wrap{max-width:480px;margin:0 auto;padding:12px 12px 40px}
+header{display:flex;align-items:center;gap:8px;margin:6px 4px 12px}
+h1{flex:1;margin:0;font-size:22px}
+button{font:inherit;font-size:13px;color:inherit;border:0;background:var(--card);border-radius:99px;padding:8px 12px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--sub);margin-right:6px;vertical-align:1px}
+.on{background:var(--ok)}
+.row{display:flex;align-items:center;gap:10px;background:var(--card);border-radius:16px;padding:12px 14px;margin-bottom:8px}
+.f{font-size:26px}
+.c b{display:block;font-size:15px}
+.c small,.h{font-size:12px;color:var(--sub)}
+.v{flex:1;min-width:0;text-align:right}
+.v input{width:100%;border:0;padding:0;background:none;color:var(--tx);font:700 22px system-ui,sans-serif;text-align:right;outline:none}
+.v input:focus{color:var(--ac)}
+.note{font-size:11px;color:var(--sub);text-align:center;line-height:1.5}
+dialog{border:0;border-radius:18px;padding:10px;width:min(92vw,420px);max-height:80vh;background:var(--bg);color:var(--tx)}
+dialog label{display:flex;gap:10px;align-items:center;padding:10px 12px;background:var(--card);border-radius:12px;margin-bottom:6px}
+dialog input{margin-left:auto;width:20px;height:20px;accent-color:var(--ac)}
+dialog button{width:100%;background:var(--ac);color:#fff;font-size:15px;padding:12px;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>환율</h1>
+    <button id="st">불러오는 중</button>
+    <button id="pick">통화</button>
+  </header>
+  <div id="list"></div>
+  <p class="note" id="note"></p>
+</div>
+<dialog id="dlg"><div id="opts"></div><button id="done">완료</button></dialog>
+<script>
+var SNAP = {"d":"2026-11-15","r":{"KRW":1,"USD":0.00074809,"JPY":0.119461,"EUR":0.000678721,"CNY":0.00499103,"HKD":0.00586922,"TWD":0.02462,"GBP":0.000566191,"CHF":0.000627543,"CAD":0.00106759,"AUD":0.00110443,"NZD":0.0013545,"SGD":0.000963504,"THB":0.0253513,"VND":19.2365,"PHP":0.04772,"MYR":0.00305695,"IDR":13.6273,"INR":0.0705147,"AED":0.00274736}};
+// 코드: [국기, 이름, 표시단위]
+var CUR = {
+  KRW:["🇰🇷","원",1], USD:["🇺🇸","미국 달러",1], JPY:["🇯🇵","일본 엔",100], EUR:["🇪🇺","유로",1],
+  CNY:["🇨🇳","중국 위안",1], HKD:["🇭🇰","홍콩 달러",1], TWD:["🇹🇼","대만 달러",1], GBP:["🇬🇧","영국 파운드",1],
+  CHF:["🇨🇭","스위스 프랑",1], CAD:["🇨🇦","캐나다 달러",1], AUD:["🇦🇺","호주 달러",1], NZD:["🇳🇿","뉴질랜드 달러",1],
+  SGD:["🇸🇬","싱가포르 달러",1], THB:["🇹🇭","태국 바트",1], VND:["🇻🇳","베트남 동",100], PHP:["🇵🇭","필리핀 페소",1],
+  MYR:["🇲🇾","말레이시아 링깃",1], IDR:["🇮🇩","인도네시아 루피아",100], INR:["🇮🇳","인도 루피",1], AED:["🇦🇪","UAE 디르함",1]
+};
+var NODEC = {KRW:1, VND:1, IDR:1};
+var $ = function(id){ return document.getElementById(id); };
+function get(k, d){ try { var v = localStorage.getItem("fx." + k); return v ? JSON.parse(v) : d; } catch(e){ return d; } }
+function put(k, v){ try { localStorage.setItem("fx." + k, JSON.stringify(v)); } catch(e){} }
+
+var list = get("list", ["KRW","USD","JPY","EUR","CNY"]).filter(function(c){ return CUR[c]; });
+var base = get("base", {c:"USD", v:1});          // 마지막으로 입력한 통화와 금액
+var R = get("rates", null) || {r:SNAP.r, t:0, d:SNAP.d};   // r: 1원당 각 통화, t: 실시간 수신 시각
+var IN_FRAME = window.self !== window.top;
+
+// ----- 숫자 표시 -----
+function fmt(c, v){
+  if (!isFinite(v)) return "";
+  var a = Math.abs(v);
+  if (a > 0 && a < 1) return v.toLocaleString("en-US", {maximumSignificantDigits:3});
+  var cents = !NODEC[c] && Math.round(a * 100) % 100 !== 0;
+  return v.toLocaleString("en-US", {minimumFractionDigits:cents ? 2 : 0, maximumFractionDigits:NODEC[c] ? 0 : 2});
+}
+function won(v){                       // 133,673,750 → 약 1억 3,367만원
+  var n = Math.round(Math.abs(v));
+  if (n < 10000) return "원";
+  var eok = Math.floor(n / 1e8), man = Math.floor(n % 1e8 / 1e4), rest = n % 1e4, s = [];
+  if (eok) s.push(eok.toLocaleString() + "억");
+  if (man) s.push(man.toLocaleString() + "만");
+  if (!eok && rest) s.push(rest.toLocaleString());
+  return (eok && rest ? "약 " : "") + s.join(" ") + "원";
+}
+function hint(c, v){
+  if (c === "KRW") return won(v);
+  var u = CUR[c][2], k = u / R.r[c];
+  return u + " " + c + " = " + k.toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2}) + "원";
+}
+function val(c){ return base.v / R.r[base.c] * R.r[c]; }
+
+// ----- 화면 -----
+function render(){
+  $("list").innerHTML = list.map(function(c){
+    return '<div class="row"><span class="f">' + CUR[c][0] + '</span>'
+      + '<div class="c"><b>' + c + '</b><small>' + CUR[c][1] + '</small></div>'
+      + '<div class="v"><input data-c="' + c + '" inputmode="decimal" autocomplete="off" aria-label="' + CUR[c][1] + '">'
+      + '<div class="h"></div></div></div>';
+  }).join("");
+  update();
+}
+function update(){                     // 입력 중인 칸은 건드리지 않고 나머지만 갱신
+  var rows = document.querySelectorAll("#list input");
+  for (var i = 0; i < rows.length; i++){
+    var inp = rows[i], c = inp.dataset.c, v = val(c);
+    if (inp !== document.activeElement) inp.value = fmt(c, v);
+    inp.nextElementSibling.textContent = hint(c, v);
+  }
+  status();
+}
+function hm(t){ var d = new Date(t); return d.getHours() + ":" + String(d.getMinutes()).padStart(2, "0"); }
+function status(){
+  var live = Date.now() - R.t < 180000, p = R.d.split("-");
+  $("st").innerHTML = '<i class="dot' + (live ? " on" : "") + '"></i>'
+    + (live ? "실시간 " + hm(R.t) : R.t ? hm(R.t) + " 기준" : (+p[1]) + "." + (+p[2]) + " 기준");
+  $("note").innerHTML = live ? "국제 외환시장 실시간 시세 · 1분마다 자동 갱신 (Coinbase)<br>은행 환전 시에는 수수료만큼 차이가 나요"
+    : IN_FRAME ? "미리보기에서는 실시간 연결이 막혀 있어요.<br>설치한 앱에서는 1분마다 자동 갱신돼요"
+    : "인터넷에 연결되면 실시간 환율로 바뀌어요";
+}
+
+// ----- 입력 -----
+var L = $("list");
+L.addEventListener("focusin", function(e){
+  var i = e.target; if (!i.dataset.c) return;
+  i.value = i.value.replace(/,/g, "");
+  setTimeout(function(){ i.select(); }, 0);
+});
+L.addEventListener("input", function(e){
+  var i = e.target, v = parseFloat(i.value.replace(/[^0-9.]/g, ""));
+  base = {c:i.dataset.c, v:isFinite(v) ? v : 0};
+  put("base", base);
+  update();
+});
+L.addEventListener("focusout", function(e){
+  var i = e.target; if (i.dataset.c) i.value = fmt(i.dataset.c, val(i.dataset.c));
+});
+L.addEventListener("keydown", function(e){ if (e.key === "Enter") e.target.blur(); });
+
+// ----- 통화 고르기 -----
+$("pick").onclick = function(){
+  $("opts").innerHTML = Object.keys(CUR).map(function(c){
+    return '<label><span class="f">' + CUR[c][0] + '</span>' + c + ' <small>' + CUR[c][1] + '</small>'
+      + '<input type="checkbox" value="' + c + '"' + (list.indexOf(c) >= 0 ? " checked" : "") + '></label>';
+  }).join("");
+  $("dlg").showModal();
+};
+$("opts").onchange = function(e){
+  var on = [].slice.call(document.querySelectorAll("#opts input:checked")).map(function(x){ return x.value; });
+  if (on.length < 2) { e.target.checked = true; return; }     // 최소 2개
+  list = on; put("list", list);
+};
+$("done").onclick = function(){ $("dlg").close(); render(); };
+
+// ----- 실시간 환율 -----
+function load(url){
+  return Promise.race([
+    fetch(url, {cache:"no-store"}).then(function(r){ if (!r.ok) throw 0; return r.json(); }),
+    new Promise(function(_, no){ setTimeout(no, 7000); })
+  ]);
+}
+function save(r, t, d){ R = {r:r, t:t, d:d}; put("rates", R); update(); }
+function refresh(){
+  load("https://api.coinbase.com/v2/exchange-rates?currency=USD").then(function(j){
+    var x = j.data.rates, k = +x.KRW, r = {KRW:1};
+    if (!(k > 300 && k < 5000)) throw 0;
+    for (var c in CUR) if (c !== "KRW") { var v = c === "USD" ? 1 : +x[c]; r[c] = v > 0 ? v / k : R.r[c]; }
+    var n = new Date();
+    save(r, n.getTime(), n.getFullYear() + "-" + (n.getMonth() + 1) + "-" + n.getDate());
+  })["catch"](function(){
+    if (R.t && Date.now() - R.t < 864e5) return status();     // 최근 실시간 값 유지
+    return load("https://latest.currency-api.pages.dev/v1/currencies/krw.min.json").then(function(j){
+      var r = {KRW:1};
+      for (var c in CUR) if (c !== "KRW") r[c] = j.krw[c.toLowerCase()] || R.r[c];
+      save(r, 0, j.date);
+    });
+  })["catch"](status);
+}
+$("st").onclick = function(){ $("st").textContent = "…"; refresh(); };
+setInterval(function(){ if (!document.hidden) refresh(); }, 60000);
+setInterval(status, 20000);
+document.addEventListener("visibilitychange", function(){ if (!document.hidden && Date.now() - R.t > 30000) refresh(); });
+
+try { if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("sw.js")["catch"](function(){}); } catch(e){}
+render();
+refresh();
+</script>
+</body>
+</html>
