@@ -4,10 +4,12 @@
 //   GET  /vapid                                             알림용 공개키
 //   POST /sub   {sub, list, names, th, welcome}             알림 켜기·종목 갱신
 //   POST /unsub {endpoint}                                  알림 끄기
+//   POST /translate {q, src, tgt}                           번역 (Workers AI)
 //   (1분마다) 장중에 알림 켠 종목이 전일 종가 대비 th%(기본 5%) 배수를 넘나들 때마다 푸시
 //            예) +5% → +10% → +15%, 다시 +10% 아래로 내려오면 그것도 알림 (경계 여유 최대 0.5%p)
 
 import { genVapid, sendPush } from "./push.js";
+import { translate } from "./translate.js";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -197,6 +199,13 @@ export default {
     const url = new URL(req.url);
     try {
       if (url.pathname === "/search") return json(await search(url.searchParams.get("q") || ""));
+      if (url.pathname === "/translate") {
+        const origin = req.headers.get("Origin") || "";
+        if (origin && !/^https:\/\/notforsale-kr\.github\.io$/i.test(origin) && !/^http:\/\/localhost(:\d+)?$/.test(origin)) return json({ error: "forbidden" }, 403);
+        if (!env.AI) return json({ error: "fail", detail: "AI binding missing" }, 503);
+        const b = req.method === "POST" ? await req.json().catch(() => ({})) : Object.fromEntries(url.searchParams);
+        return json(await translate(env.AI, b.q, b.src, b.tgt));
+      }
       if (["/vapid", "/sub", "/unsub"].includes(url.pathname)) {
         const r = await store(env).fetch(new Request("https://store" + url.pathname, { method: req.method, body: req.method === "POST" ? await req.text() : undefined }));
         return new Response(r.body, { status: r.status, headers: CORS });
